@@ -145,8 +145,79 @@ public class DBClient {
         return issues;
     }
 
+    /**
+     * Chunked table comparison — memory-efficient for large tables.
+     * Processes CHUNK_SIZE rows at a time to avoid loading millions of rows into memory.
+     */
+    public List<String> compareWithChunked(DBClient other, String table,
+                                           String keyColumn, int chunkSize,
+                                           String... columns) {
+        List<String> issues = new ArrayList<>();
+        String cols = columns.length == 0 ? "*" : keyColumn + "," + String.join(",", columns);
+
+        long totalRows = ((Number) this.queryScalar("SELECT COUNT(*) FROM " + table)).longValue();
+        log.info("Starting chunked comparison: table={} totalRows={} chunkSize={}", table, totalRows, chunkSize);
+
+        for (long offset = 0; offset < totalRows; offset += chunkSize) {
+            String sql = "SELECT " + cols + " FROM " + table
+                    + " ORDER BY " + keyColumn
+                    + " LIMIT " + chunkSize + " OFFSET " + offset;
+
+            List<Map<String, Object>> sourceChunk = this.query(sql);
+            List<Map<String, Object>> targetChunk = other.query(sql);
+
+            Map<Object, Map<String, Object>> targetMap = new LinkedHashMap<>();
+            for (Map<String, Object> row : targetChunk) {
+                targetMap.put(row.get(keyColumn), row);
+            }
+
+            for (Map<String, Object> sRow : sourceChunk) {
+                Object key = sRow.get(keyColumn);
+                Map<String, Object> tRow = targetMap.get(key);
+                if (tRow == null) {
+                    issues.add("MISSING in target: " + keyColumn + "=" + key);
+                    continue;
+                }
+                for (String col : sRow.keySet()) {
+                    Object sv = sRow.get(col), tv = tRow.get(col);
+                    if (!Objects.equals(String.valueOf(sv), String.valueOf(tv))) {
+                        issues.add("MISMATCH [" + keyColumn + "=" + key + "] col=" + col
+                                + " source=" + sv + " target=" + tv);
+                    }
+                }
+            }
+            log.info("  Compared chunk offset={} → issues so far: {}", offset, issues.size());
+        }
+        return issues;
+    }
+
+    /** Check if DB connection is healthy. */
+    public boolean isHealthy() {
+        try {
+            Object result = queryScalar("SELECT 1");
+            return result != null;
+        } catch (Exception e) {
+            log.error("DB health check failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** Returns pool name for logging. */
+    public String getPoolName() {
+        return ds.getPoolName();
+    }
+
     public void close() {
-        if (ds != null && !ds.isClosed()) ds.close();
+        if (ds != null && !ds.isClosed()) {
+            log.info("Closing DB pool: {}", ds.getPoolName());
+            ds.close();
+        }
+    }
+
+    /** Called from Hooks.AfterAll — shuts down both pools cleanly. */
+    public static void closeAll() {
+        if (SOURCE_INSTANCE != null) { SOURCE_INSTANCE.close(); SOURCE_INSTANCE = null; }
+        if (TARGET_INSTANCE != null) { TARGET_INSTANCE.close(); TARGET_INSTANCE = null; }
     }
 
     private PreparedStatement buildStatement(Connection conn, String sql, Object[] params) throws SQLException {
