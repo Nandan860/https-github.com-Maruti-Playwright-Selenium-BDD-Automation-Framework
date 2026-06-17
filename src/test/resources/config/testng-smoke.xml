@@ -1,0 +1,26 @@
+<!-- 
+    SMOKE SUITE — runs on every push/PR in CI
+    Only @smoke tagged scenarios, headless Chrome, fast feedback.
+    Target: complete in under 5 minutes.
+ -->
+<suite name="Smoke Suite" verbose="1" parallel="methods" thread-count="3">
+<listeners>
+<listener class-name="com.framework.utils.RetryListener"/>
+<listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+</listeners>
+<test name="Smoke — UI Critical Path">
+<parameter name="browser" value="chrome"/>
+<parameter name="engine" value="selenium"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@smoke and @ui"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+<test name="Smoke — API Critical Path">
+<parameter name="cucumber.filter.tags" value="@smoke and @api"/>
+<classes>
+<class name="com.framework.runners.ApiTestRunner"/>
+</classes>
+</test>
+</suite>

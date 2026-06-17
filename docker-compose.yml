@@ -1,0 +1,145 @@
+# =============================================================================
+# Docker Compose — Local Development & CI Services
+#
+# Services:
+#   postgres-source  — legacy source DB (port 5432)
+#   postgres-target  — new target DB   (port 5433)
+#   selenium-hub     — Selenium Grid 4 hub
+#   chrome-node      — Chrome browser node
+#   firefox-node     — Firefox browser node
+#   edge-node        — Edge browser node
+#
+# Usage:
+#   All services:       docker compose up -d
+#   DB only:            docker compose up -d postgres-source postgres-target
+#   Grid only:          docker compose up -d selenium-hub chrome-node firefox-node
+#   Teardown + volumes: docker compose down -v
+# =============================================================================
+
+version: '3.9'
+
+networks:
+  qa-network:
+    driver: bridge
+
+volumes:
+  postgres-source-data:
+  postgres-target-data:
+
+services:
+
+  # ── PostgreSQL — Source (Legacy) ──────────────────────────────────────────
+  postgres-source:
+    image: postgres:16-alpine
+    container_name: qa-postgres-source
+    networks: [ qa-network ]
+    environment:
+      POSTGRES_DB:       legacy_db
+      POSTGRES_USER:     ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-source-data:/var/lib/postgresql/data
+      - ./sql/init-source.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL — Target (New Platform) ───────────────────────────────────
+  postgres-target:
+    image: postgres:16-alpine
+    container_name: qa-postgres-target
+    networks: [ qa-network ]
+    environment:
+      POSTGRES_DB:       new_db
+      POSTGRES_USER:     ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-target-data:/var/lib/postgresql/data
+      - ./sql/init-target.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Selenium Grid 4 Hub ───────────────────────────────────────────────────
+  selenium-hub:
+    image: selenium/hub:4.18.1
+    container_name: qa-selenium-hub
+    networks: [ qa-network ]
+    ports:
+      - "4442:4442"    # event bus publisher
+      - "4443:4443"    # event bus subscriber
+      - "4444:4444"    # Grid UI and WebDriver endpoint
+    environment:
+      GRID_MAX_SESSION: 16
+      GRID_BROWSER_TIMEOUT: 300
+      GRID_TIMEOUT: 300
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sSf http://localhost:4444/wd/hub/status | python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"value\"][\"ready\"] else 1)'" ]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+
+  # ── Chrome Node ───────────────────────────────────────────────────────────
+  chrome-node:
+    image: selenium/node-chrome:4.18.1
+    container_name: qa-chrome-node
+    networks: [ qa-network ]
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 4
+      SE_NODE_SESSION_TIMEOUT: 300
+      START_XVFB: "false"
+    volumes:
+      - /dev/shm:/dev/shm
+    shm_size: 2g
+
+  # ── Firefox Node ──────────────────────────────────────────────────────────
+  firefox-node:
+    image: selenium/node-firefox:4.18.1
+    container_name: qa-firefox-node
+    networks: [ qa-network ]
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 4
+      SE_NODE_SESSION_TIMEOUT: 300
+      START_XVFB: "false"
+    volumes:
+      - /dev/shm:/dev/shm
+    shm_size: 2g
+
+  # ── Edge Node ─────────────────────────────────────────────────────────────
+  edge-node:
+    image: selenium/node-edge:4.18.1
+    container_name: qa-edge-node
+    networks: [ qa-network ]
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 4
+      SE_NODE_SESSION_TIMEOUT: 300
+      START_XVFB: "false"
+    volumes:
+      - /dev/shm:/dev/shm
+    shm_size: 2g

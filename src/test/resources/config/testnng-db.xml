@@ -1,0 +1,32 @@
+
+<!-- 
+    DATABASE / ETL VALIDATION SUITE
+    Requires PostgreSQL source and target databases running.
+    Lower thread count — DB comparison is CPU + memory intensive.
+
+    Usage: mvn clean test -Pdb
+ -->
+<suite name="DB ETL Validation Suite" verbose="1" parallel="tests" thread-count="2">
+<listeners>
+<listener class-name="com.framework.utils.RetryListener"/>
+<listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+</listeners>
+<test name="ETL — Accounts Migration">
+<parameter name="cucumber.filter.tags" value="@db and @accounts"/>
+<classes>
+<class name="com.framework.runners.DbTestRunner"/>
+</classes>
+</test>
+<test name="ETL — Transactions Migration">
+<parameter name="cucumber.filter.tags" value="@db and @transactions"/>
+<classes>
+<class name="com.framework.runners.DbTestRunner"/>
+</classes>
+</test>
+<test name="DB — UI and API Data Integrity">
+<parameter name="cucumber.filter.tags" value="@db and @integrity"/>
+<classes>
+<class name="com.framework.runners.DbTestRunner"/>
+</classes>
+</test>
+</suite>

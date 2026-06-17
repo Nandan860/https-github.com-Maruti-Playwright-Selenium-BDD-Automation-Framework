@@ -1,5 +1,6 @@
 package com.framework.utils;
 
+import com.framework.exception.TestDataException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.*;
@@ -54,7 +55,7 @@ public class ExcelReader {
             log.info("Read {} data rows from {}[{}]", data.size(), filePath, sheetName);
 
         } catch (IOException e) {
-            throw new RuntimeException("Failed to read Excel: " + filePath, e);
+            throw new TestDataException(filePath, e);
         }
         return data;
     }

@@ -1,0 +1,346 @@
+# =============================================================================
+# GitHub Actions — Enterprise QA Automation CI Pipeline
+#
+# Triggers:
+#   push → main / develop        : Smoke suite (fast feedback)
+#   pull_request → main          : Smoke + Regression
+#   schedule (nightly 2am UTC)   : Full suite + cross-browser matrix
+#   workflow_dispatch            : Manual trigger with input params
+#
+# Structure:
+#   Job 1: smoke        — runs on every push, Chrome only, ~5 min
+#   Job 2: regression   — runs on PR, Chrome only, full suite
+#   Job 3: crossbrowser — nightly, Chrome + Firefox + Edge + WebKit in parallel
+#   Job 4: db-etl       — nightly, PostgreSQL ETL validation
+#   Job 5: report       — always runs, publishes Allure to GitHub Pages
+# =============================================================================
+
+name: QA Automation CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *'        # nightly at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Test suite to run'
+        required: true
+        default: 'smoke'
+        type: choice
+        options: [ smoke, regression, crossbrowser, db, all ]
+      browser:
+        description: 'Browser (for manual runs)'
+        required: false
+        default: 'chrome'
+        type: choice
+        options: [ chrome, firefox, edge ]
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx2048m -XX:+TieredCompilation -XX:TieredStopAtLevel=1'
+  TZ: 'UTC'
+
+# ── Job 1: Smoke Suite ────────────────────────────────────────────────────────
+jobs:
+  smoke:
+    name: 🚀 Smoke — ${{ matrix.os }}
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'smoke')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Install Playwright browsers
+        run: mvn exec:java -e -D exec.mainClass=com.microsoft.playwright.CLI -D exec.args="install --with-deps chromium"
+        continue-on-error: true
+
+      - name: Start PostgreSQL via Docker Compose
+        run: docker compose -f docker-compose.yml up -d postgres-source postgres-target
+        continue-on-error: true
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          echo "Waiting for PostgreSQL..."
+          for i in {1..30}; do
+            if docker exec qa-postgres-source pg_isready -U postgres; then break; fi
+            sleep 2
+          done
+
+      - name: Run Smoke Tests
+        run: |
+          mvn clean test \
+            -DsuiteXmlFile=src/test/resources/config/testng-smoke.xml \
+            -Dbrowser=chrome \
+            -Dheadless=true \
+            -Denv=ci \
+            -Dapp.url=${{ secrets.APP_URL }} \
+            -Dapi.base.url=${{ secrets.API_BASE_URL }} \
+            -Dsource.db.url=${{ secrets.SOURCE_DB_URL }} \
+            -Dtarget.db.url=${{ secrets.TARGET_DB_URL }} \
+            -Dsource.db.user=${{ secrets.DB_USER }} \
+            -Dsource.db.password=${{ secrets.DB_PASSWORD }} \
+            -Dtarget.db.user=${{ secrets.DB_USER }} \
+            -Dtarget.db.password=${{ secrets.DB_PASSWORD }}
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-smoke-${{ matrix.os }}
+          path: target/allure-results
+          retention-days: 7
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-smoke-${{ matrix.os }}
+          path: target/screenshots
+          retention-days: 3
+
+      - name: Cleanup Docker
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
+        continue-on-error: true
+
+# ── Job 2: Full Regression (PR only) ──────────────────────────────────────────
+  regression:
+    name: 🔁 Regression — Chrome
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'regression')
+    needs: smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Start services
+        run: docker compose -f docker-compose.yml up -d
+
+      - name: Wait for services
+        run: sleep 15
+
+      - name: Run Regression Suite
+        run: |
+          mvn clean test \
+            -DsuiteXmlFile=src/test/resources/config/testng.xml \
+            -Dbrowser=chrome \
+            -Dheadless=true \
+            -DthreadCount=4 \
+            -Denv=ci \
+            -Dapp.url=${{ secrets.APP_URL }} \
+            -Dapi.base.url=${{ secrets.API_BASE_URL }} \
+            -Dsource.db.url=${{ secrets.SOURCE_DB_URL }} \
+            -Dtarget.db.url=${{ secrets.TARGET_DB_URL }} \
+            -Dsource.db.user=${{ secrets.DB_USER }} \
+            -Dsource.db.password=${{ secrets.DB_PASSWORD }} \
+            -Dtarget.db.user=${{ secrets.DB_USER }} \
+            -Dtarget.db.password=${{ secrets.DB_PASSWORD }}
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-regression
+          path: target/allure-results
+          retention-days: 14
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
+        continue-on-error: true
+
+# ── Job 3: Cross-Browser Matrix (nightly) ─────────────────────────────────────
+  crossbrowser:
+    name: 🌐 ${{ matrix.browser }} on ${{ matrix.os }}
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'crossbrowser')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Selenium engines
+          - browser: chrome    os: ubuntu-latest  engine: selenium
+          - browser: chrome    os: windows-latest engine: selenium
+          - browser: chrome    os: macos-latest   engine: selenium
+          - browser: firefox   os: ubuntu-latest  engine: selenium
+          - browser: firefox   os: windows-latest engine: selenium
+          - browser: edge      os: ubuntu-latest  engine: selenium
+          - browser: edge      os: windows-latest engine: selenium
+          # Playwright engines
+          - browser: chromium  os: ubuntu-latest  engine: playwright
+          - browser: webkit    os: ubuntu-latest  engine: playwright
+          - browser: webkit    os: macos-latest   engine: playwright
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Install Playwright browsers (Playwright jobs only)
+        if: matrix.engine == 'playwright'
+        run: mvn exec:java -e -D exec.mainClass=com.microsoft.playwright.CLI -D exec.args="install --with-deps ${{ matrix.browser }}"
+
+      - name: Run Cross-Browser Suite
+        run: |
+          mvn clean test \
+            -DsuiteXmlFile=src/test/resources/config/testng-crossbrowser.xml \
+            -Dbrowser=${{ matrix.browser }} \
+            -Dengine=${{ matrix.engine }} \
+            -Dheadless=true \
+            -Denv=ci \
+            -Dapp.url=${{ secrets.APP_URL }} \
+            -Dapi.base.url=${{ secrets.API_BASE_URL }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-${{ matrix.engine }}-${{ matrix.browser }}-${{ matrix.os }}
+          path: target/allure-results
+          retention-days: 7
+
+# ── Job 4: DB / ETL Validation (nightly) ──────────────────────────────────────
+  db-etl:
+    name: 🗄️ DB ETL Validation
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'db')
+    runs-on: ubuntu-latest
+
+    services:
+      postgres-source:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: legacy_db
+          POSTGRES_USER: ${{ secrets.DB_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        ports: [ "5432:5432" ]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      postgres-target:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: new_db
+          POSTGRES_USER: ${{ secrets.DB_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        ports: [ "5433:5432" ]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Seed source database
+        run: psql -h localhost -p 5432 -U ${{ secrets.DB_USER }} -d legacy_db -f sql/init-source.sql
+        env:
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+
+      - name: Seed target database
+        run: psql -h localhost -p 5433 -U ${{ secrets.DB_USER }} -d new_db -f sql/init-target.sql
+        env:
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+
+      - name: Run DB ETL Tests
+        run: |
+          mvn clean test \
+            -DsuiteXmlFile=src/test/resources/config/testng-db.xml \
+            -Dsource.db.url=jdbc:postgresql://localhost:5432/legacy_db \
+            -Dtarget.db.url=jdbc:postgresql://localhost:5433/new_db \
+            -Dsource.db.user=${{ secrets.DB_USER }} \
+            -Dsource.db.password=${{ secrets.DB_PASSWORD }} \
+            -Dtarget.db.user=${{ secrets.DB_USER }} \
+            -Dtarget.db.password=${{ secrets.DB_PASSWORD }}
+
+      - name: Upload DB results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-db-etl
+          path: target/allure-results
+          retention-days: 14
+
+# ── Job 5: Allure Report Publisher ────────────────────────────────────────────
+  publish-report:
+    name: 📊 Publish Allure Report
+    if: always()
+    needs: [ smoke, regression ]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all Allure results
+        uses: actions/download-artifact@v4
+        with:
+          path: allure-results-merged
+          pattern: allure-*
+          merge-multiple: true
+
+      - name: Generate Allure Report
+        uses: simple-elf/allure-report-action@master
+        with:
+          allure_results: allure-results-merged
+          allure_report: allure-report
+          gh_pages: gh-pages
+          allure_history: allure-history
+          keep_reports: 30
+
+      - name: Publish to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: allure-report
+
+      - name: Post PR comment with report link
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## 📊 Allure Test Report\n\nTest results have been published: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}\n\n> Generated from commit ${{ github.sha }}'
+            })

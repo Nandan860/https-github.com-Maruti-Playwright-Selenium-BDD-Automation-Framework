@@ -1,1 +1,40 @@
-/target/
+# ── Build output ──────────────────────────────────────────────────────────────
+target/
+*.class
+*.jar
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.eclipse/
+.classpath
+.project
+.settings/
+*.vscode/
+
+# ── Credentials — NEVER commit these ─────────────────────────────────────────
+src/main/resources/config/dev.properties
+src/main/resources/config/staging.properties
+src/main/resources/config/prod.properties
+.env
+*.env
+secrets/
+
+# ── Test outputs ──────────────────────────────────────────────────────────────
+allure-results/
+allure-report/
+target/screenshots/
+target/logs/
+target/cucumber-reports/
+test-output/
+
+# ── Downloads (from download tests) ──────────────────────────────────────────
+downloads/
+*.download
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Maven wrapper ─────────────────────────────────────────────────────────────
+!.mvn/wrapper/maven-wrapper.jar

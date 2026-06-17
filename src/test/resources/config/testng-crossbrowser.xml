@@ -1,0 +1,69 @@
+
+<!-- 
+    CROSS-BROWSER SUITE
+    Runs the same UI tests across Chrome, Firefox, Edge, WebKit in parallel.
+
+    Each <test> block is a separate browser — TestNG runs all <test> blocks
+    in parallel because parallel="tests" is set at the suite level.
+
+    Usage:
+      mvn clean test -Dsuite=crossbrowser
+      or directly:
+      mvn clean test -DsuiteXmlFile=src/test/resources/config/testng-crossbrowser.xml
+ -->
+<suite name="Cross-Browser Suite" verbose="1" parallel="tests" thread-count="5">
+<listeners>
+<listener class-name="com.framework.utils.RetryListener"/>
+<listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+</listeners>
+<!--  ── Chrome (Selenium) ────────────────────────────────────────────  -->
+<test name="Chrome — Selenium">
+<parameter name="browser" value="chrome"/>
+<parameter name="engine" value="selenium"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@ui and @smoke"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+<!--  ── Firefox (Selenium) ───────────────────────────────────────────  -->
+<test name="Firefox — Selenium">
+<parameter name="browser" value="firefox"/>
+<parameter name="engine" value="selenium"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@ui and @smoke"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+<!--  ── Edge (Selenium) ──────────────────────────────────────────────  -->
+<test name="Edge — Selenium">
+<parameter name="browser" value="edge"/>
+<parameter name="engine" value="selenium"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@ui and @smoke"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+<!--  ── Chromium (Playwright) ────────────────────────────────────────  -->
+<test name="Chromium — Playwright">
+<parameter name="browser" value="chromium"/>
+<parameter name="engine" value="playwright"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@ui and @smoke"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+<!--  ── WebKit / Safari (Playwright) ────────────────────────────────  -->
+<test name="WebKit — Playwright">
+<parameter name="browser" value="webkit"/>
+<parameter name="engine" value="playwright"/>
+<parameter name="headless" value="true"/>
+<parameter name="cucumber.filter.tags" value="@ui and @smoke"/>
+<classes>
+<class name="com.framework.runners.CrossBrowserTestRunner"/>
+</classes>
+</test>
+</suite>
